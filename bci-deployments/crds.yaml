@@ -1,0 +1,114 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: datapolicies.bci.example.com
+spec:
+  group: bci.example.com
+  scope: Namespaced
+  names:
+    plural: datapolicies
+    singular: datapolicy
+    kind: DataPolicy
+    shortNames: ["dp"]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                rawRetention:
+                  type: string
+                allowEgress:
+                  type: array
+                  items: { type: string }
+                allowIngressFromNamespaces:
+                  type: array
+                  items: { type: string }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: signalpipelines.bci.example.com
+spec:
+  group: bci.example.com
+  scope: Namespaced
+  names:
+    plural: signalpipelines
+    singular: signalpipeline
+    kind: SignalPipeline
+    shortNames: ["sp"]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                input:
+                  type: object
+                  properties:
+                    streamType: { type: string }
+                    channels: { type: integer }
+                    nominalRateHz: { type: number }
+                processing:
+                  type: object
+                  properties:
+                    frameMs: { type: integer }
+                    notchHz: { type: integer }
+                    bandpassHz:
+                      type: array
+                      items: { type: number }
+                decoder:
+                  type: object
+                  properties:
+                    type: { type: string }
+                    modelRef: { type: string }
+                output:
+                  type: object
+                  properties:
+                    lslOut:
+                      type: object
+                      properties:
+                        streamName: { type: string }
+                        streamType: { type: string }
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: bcisessions.bci.example.com
+spec:
+  group: bci.example.com
+  scope: Namespaced
+  names:
+    plural: bcisessions
+    singular: bcisession
+    kind: BCISession
+    shortNames: ["bci"]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                stream:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    type: { type: string }
+                pipelineRef: { type: string }
+                latencyBudgetMs: { type: integer }
+                dataPolicyRef: { type: string }

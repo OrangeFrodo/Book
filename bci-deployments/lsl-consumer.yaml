@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lsl-consumer
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lsl-consumer
+  template:
+    metadata:
+      labels:
+        app: lsl-consumer
+    spec:
+      # Key setting for LSL discovery reliability
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: consumer
+          image: python:3.11-slim
+          command: ["bash","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir pylsl && \
+              python - <<'PY'
+              from pylsl import resolve_byprop, StreamInlet
+              import time
+
+              print("Resolving LSL stream where name=EEG_SIM ...")
+              streams = resolve_byprop('name', 'EEG_SIM', timeout=10)
+
+              if not streams:
+                  raise SystemExit("Stream not found. Is lsl-sim running?")
+
+              inlet = StreamInlet(streams[0])
+              print("Connected. Pulling samples...")
+
+              while True:
+                  sample, ts = inlet.pull_sample(timeout=1.0)
+                  if sample is not None:
+                      # print first 3 channels to avoid spam
+                      print(f"{ts:.3f}  {sample[:3]} ...")
+                  time.sleep(0.1)
+              PY

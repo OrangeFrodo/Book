@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lsl-alpha-features
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lsl-alpha-features }
+  template:
+    metadata:
+      labels: { app: lsl-alpha-features }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: features
+          image: python:3.11-slim
+          env:
+            - name: IN_STREAM
+              value: "EEG_UDL_01"      # later change to your headset stream name
+            - name: OUT_STREAM
+              value: "EEG_ALPHA"
+            - name: CHANNEL
+              value: "0"            # compute alpha from ch0
+            - name: WINDOW_SEC
+              value: "1.0"          # 1 second FFT window
+            - name: UPDATE_HZ
+              value: "10"           # output feature 10 times/sec
+          command: ["bash","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir pylsl numpy && \
+              python - <<'PY'
+              import os, time
+              import numpy as np
+              from pylsl import resolve_byprop, StreamInlet, StreamInfo, StreamOutlet
+
+              IN_STREAM  = os.getenv("IN_STREAM", "EEG_SIM")
+              OUT_STREAM = os.getenv("OUT_STREAM", "EEG_ALPHA")
+              CHANNEL    = int(os.getenv("CHANNEL", "0"))
+              WINDOW_SEC = float(os.getenv("WINDOW_SEC", "1.0"))
+              UPDATE_HZ  = float(os.getenv("UPDATE_HZ", "10"))
+
+              print(f"[alpha] Resolving LSL input name={IN_STREAM} ...")
+              streams = resolve_byprop("name", IN_STREAM, timeout=15)
+              if not streams:
+                raise SystemExit(f"[alpha] Stream not found: {IN_STREAM}")
+
+              inlet = StreamInlet(streams[0])
+              info  = inlet.info()
+              srate = float(info.nominal_srate()) if info.nominal_srate() > 0 else 250.0
+              nch   = info.channel_count()
+
+              if CHANNEL < 0 or CHANNEL >= nch:
+                raise SystemExit(f"[alpha] CHANNEL={CHANNEL} out of range. Stream has {nch} channels.")
+
+              win_n = int(WINDOW_SEC * srate)
+              hop_n = max(1, int(srate / UPDATE_HZ))
+
+              print(f"[alpha] Connected. srate={srate:.2f}Hz channels={nch} window={win_n} hop={hop_n}")
+
+              # Output stream: 1 channel, feature rate UPDATE_HZ
+              out_info = StreamInfo(OUT_STREAM, "FEATURE", 1, UPDATE_HZ, "float32", "alpha-power-001")
+              outlet = StreamOutlet(out_info)
+
+              buf = np.zeros(0, dtype=np.float32)
+
+              def bandpower_alpha(x, fs):
+                # simple FFT bandpower ratio: alpha(8-12) / total(1-40)
+                x = x.astype(np.float32)
+                x = x - np.mean(x)
+                w = np.hanning(len(x)).astype(np.float32)
+                xw = x * w
+                X = np.fft.rfft(xw)
+                psd = (np.abs(X) ** 2) / (fs * len(xw) + 1e-9)
+                freqs = np.fft.rfftfreq(len(xw), d=1.0/fs)
+
+                def bp(lo, hi):
+                  m = (freqs >= lo) & (freqs <= hi)
+                  return float(np.sum(psd[m]))
+
+                alpha = bp(8.0, 12.0)
+                total = bp(1.0, 40.0) + 1e-9
+                return alpha / total  # 0..1-ish (depends on signal)
+
+              last_push = time.time()
+              while True:
+                samples, _ts = inlet.pull_chunk(timeout=0.2, max_samples=256)
+                if samples:
+                  arr = np.asarray(samples, dtype=np.float32)
+                  ch0 = arr[:, CHANNEL]
+                  buf = np.concatenate([buf, ch0])
+
+                # compute whenever we have enough and step by hop
+                while len(buf) >= win_n:
+                  window = buf[:win_n]
+                  buf = buf[hop_n:]  # slide
+                  feat = bandpower_alpha(window, srate)
+                  outlet.push_sample([feat])
+                  now = time.time()
+                  if now - last_push > 2.0:
+                    print(f"[alpha] alpha_ratio={feat:.3f}")
+                    last_push = now
+              PY

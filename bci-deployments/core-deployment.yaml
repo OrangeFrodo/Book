@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bci-runner-session-001
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: bci-runner, session: session-001 }
+  template:
+    metadata:
+      labels: { app: bci-runner, session: session-001 }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: bci-realtime
+      nodeSelector:
+        kubernetes.io/hostname: orangefrodo-nitro-an515-43
+      containers:
+        - name: runner
+          image: yourrepo/bci-runner:latest
+          env:
+            - name: LSL_STREAM_NAME
+              value: "EEG_UDL_01"
+            - name: FRAME_MS
+              value: "20"
+          resources:
+            requests:
+              cpu: "2"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"

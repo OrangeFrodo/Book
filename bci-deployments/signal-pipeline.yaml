@@ -1,0 +1,21 @@
+apiVersion: bci.example.com/v1alpha1
+kind: SignalPipeline
+metadata:
+  name: eeg-neurosciencepro-lowlat
+  namespace: bci
+spec:
+  input:
+    streamType: EEG
+    channels: 8
+    nominalRateHz: 250
+  processing:
+    frameMs: 20          # latency target
+    notchHz: 50          # or 60 depending on your mains
+    bandpassHz: [1, 40]
+  decoder:
+    type: "placeholder"  # later: "onnx", "pytorch", etc.
+    modelRef: "none"
+  output:
+    lslOut:
+      streamName: EEG_DECODED
+      streamType: MARKERS

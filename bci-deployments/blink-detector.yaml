@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lsl-blink-detector
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lsl-blink-detector }
+  template:
+    metadata:
+      labels: { app: lsl-blink-detector }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: blink
+          image: python:3.11-slim
+          env:
+            - name: IN_STREAM
+              value: "EEG_SIM"        # later: headset stream
+            - name: CHANNEL
+              value: "0"              # pick a channel that shows blinks (later likely frontal)
+            - name: OUT_STREAM
+              value: "EEG_BLINKS"
+            - name: REFRACTORY_MS
+              value: "300"            # avoid double-counting
+            - name: THRESH_Z
+              value: "4.0"            # threshold in z-score units (tune later)
+          volumeMounts:
+            - name: logs
+              mountPath: /data
+          command: ["bash","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir pylsl numpy && \
+              python - <<'PY'
+              import os, time, csv
+              import numpy as np
+              from pylsl import resolve_byprop, StreamInlet, StreamInfo, StreamOutlet
+
+              IN_STREAM  = os.getenv("IN_STREAM","EEG_SIM")
+              OUT_STREAM = os.getenv("OUT_STREAM","EEG_BLINKS")
+              CH         = int(os.getenv("CHANNEL","0"))
+              REF_MS     = int(os.getenv("REFRACTORY_MS","300"))
+              THRESH_Z   = float(os.getenv("THRESH_Z","4.0"))
+
+              streams = resolve_byprop("name", IN_STREAM, timeout=15)
+              if not streams:
+                raise SystemExit(f"[blink] Stream not found: {IN_STREAM}")
+
+              inlet = StreamInlet(streams[0])
+              info = inlet.info()
+              srate = float(info.nominal_srate()) if info.nominal_srate() > 0 else 250.0
+              nch = info.channel_count()
+              if CH < 0 or CH >= nch:
+                raise SystemExit(f"[blink] CHANNEL {CH} out of range (nch={nch})")
+
+              out_info = StreamInfo(OUT_STREAM, "MARKERS", 1, 0, "string", "blink-markers-001")
+              outlet = StreamOutlet(out_info)
+
+              path = f"/data/blinks_{int(time.time())}.csv"
+              f = open(path, "w", newline="")
+              w = csv.writer(f)
+              w.writerow(["unix_time", "lsl_ts", "value_z"])
+
+              # baseline estimation (running mean/std)
+              mu = 0.0
+              var = 1.0
+              alpha = 0.01  # slow update
+              last_blink = 0.0
+
+              print(f"[blink] Connected to {IN_STREAM} ch={CH} srate={srate:.1f} -> {OUT_STREAM}")
+              print(f"[blink] Logging to {path}")
+
+              while True:
+                samples, timestamps = inlet.pull_chunk(timeout=0.2, max_samples=256)
+                if not timestamps:
+                  continue
+                arr = np.asarray(samples, dtype=np.float32)
+                x = arr[:, CH]
+
+                # update baseline stats
+                x_mean = float(np.mean(x))
+                mu = (1-alpha)*mu + alpha*x_mean
+                # simple variance update
+                var = (1-alpha)*var + alpha*float(np.mean((x - mu)**2))
+                sd = float(np.sqrt(var) + 1e-9)
+
+                # detect peaks by z-score
+                z = (x - mu) / sd
+                zmax = float(np.max(z))
+                tmax = float(timestamps[int(np.argmax(z))])
+
+                now = time.time()
+                if zmax >= THRESH_Z and (now - last_blink) * 1000.0 > REF_MS:
+                  last_blink = now
+                  outlet.push_sample(["BLINK"], timestamp=tmax)
+                  w.writerow([now, tmax, zmax])
+                  f.flush()
+                  print(f"[blink] BLINK z={zmax:.2f}")
+
+              PY
+      volumes:
+        - name: logs
+          persistentVolumeClaim:
+            claimName: bci-logs

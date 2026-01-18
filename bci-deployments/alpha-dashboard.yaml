@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lsl-alpha-dashboard
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lsl-alpha-dashboard }
+  template:
+    metadata:
+      labels: { app: lsl-alpha-dashboard }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: dashboard
+          image: python:3.11-slim
+          env:
+            - name: FEATURE_STREAM
+              value: "EEG_ALPHA"
+            - name: STREAMLIT_SERVER_PORT
+              value: "8501"
+            - name: STREAMLIT_SERVER_ADDRESS
+              value: "0.0.0.0"
+          ports:
+            - containerPort: 8501
+          command: ["bash","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir streamlit pylsl numpy && \
+              cat > app.py <<'PY'
+              import os, time
+              import numpy as np
+              import streamlit as st
+              from pylsl import resolve_byprop, StreamInlet
+
+              STREAM = os.getenv("FEATURE_STREAM", "EEG_ALPHA")
+
+              st.set_page_config(page_title="BCI Alpha Neurofeedback", layout="centered")
+              st.title("BCI Neurofeedback: Alpha (8–12 Hz)")
+
+              status = st.empty()
+              bar = st.progress(0)
+              val_box = st.metric("Alpha ratio", "—")
+
+              status.info(f"Resolving LSL stream name={STREAM} ...")
+              streams = resolve_byprop("name", STREAM, timeout=15)
+              if not streams:
+                st.error(f"Stream not found: {STREAM}. Is lsl-alpha-features running?")
+                st.stop()
+
+              inlet = StreamInlet(streams[0])
+              status.success(f"Connected to {STREAM}. Showing live alpha ratio.")
+
+              # Simple smoothing for nicer UI
+              ema = None
+              alpha = 0.15  # smoothing factor
+
+              while True:
+                sample, ts = inlet.pull_sample(timeout=1.0)
+                if sample is None:
+                  status.warning("No samples (waiting)...")
+                  time.sleep(0.1)
+                  continue
+
+                x = float(sample[0])
+                # clamp to 0..1 for bar; ratio can exceed 1 a bit depending on signal
+                x_clamped = max(0.0, min(1.0, x))
+
+                ema = x_clamped if ema is None else (alpha * x_clamped + (1 - alpha) * ema)
+
+                bar.progress(int(ema * 100))
+                val_box.metric("Alpha ratio (smoothed)", f"{ema:.3f}")
+                time.sleep(0.05)
+              PY
+              streamlit run app.py --server.port 8501 --server.address 0.0.0.0

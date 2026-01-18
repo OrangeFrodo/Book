@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lsl-alpha-dashboard
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: lsl-alpha-dashboard }
+  template:
+    metadata:
+      labels: { app: lsl-alpha-dashboard }
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: dashboard
+          image: python:3.11-slim
+          env:
+            - name: FEATURE_STREAM
+              value: "EEG_ALPHA"
+            - name: BLINK_STREAM
+              value: "EEG_BLINKS"
+            - name: STREAMLIT_SERVER_PORT
+              value: "8501"
+            - name: STREAMLIT_SERVER_ADDRESS
+              value: "0.0.0.0"
+          ports:
+            - containerPort: 8501
+          command: ["bash","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir streamlit pylsl numpy && \
+              cat > app.py <<'PY'
+              import os, time
+              import numpy as np
+              import streamlit as st
+              from pylsl import resolve_byprop, StreamInlet
+
+              FEATURE_STREAM = os.getenv("FEATURE_STREAM", "EEG_ALPHA")
+              BLINK_STREAM   = os.getenv("BLINK_STREAM", "EEG_BLINKS")
+
+              st.set_page_config(page_title="BCI Neurofeedback", layout="centered")
+              st.title("BCI Neurofeedback: Alpha (8–12 Hz) + Blinks")
+
+              # Connect to alpha feature stream
+              def connect(name):
+                streams = resolve_byprop("name", name, timeout=10)
+                if not streams:
+                  return None
+                return StreamInlet(streams[0])
+
+              st.caption(f"Alpha stream: {FEATURE_STREAM} | Blink stream: {BLINK_STREAM}")
+
+              alpha_inlet = connect(FEATURE_STREAM)
+              if alpha_inlet is None:
+                st.error(f"Stream not found: {FEATURE_STREAM}. Is lsl-alpha-features running?")
+                st.stop()
+
+              blink_inlet = connect(BLINK_STREAM)  # optional
+              if blink_inlet is None:
+                st.warning(f"Blink stream not found yet: {BLINK_STREAM} (we'll add it next).")
+
+              # Session state for calibration
+              if "cal_mean" not in st.session_state:
+                st.session_state.cal_mean = None
+              if "cal_std" not in st.session_state:
+                st.session_state.cal_std = None
+
+              col1, col2 = st.columns(2)
+              with col1:
+                cal_seconds = st.slider("Calibration duration (sec)", 5, 30, 10)
+              with col2:
+                smooth = st.slider("UI smoothing", 0.05, 0.5, 0.15)
+
+              if st.button("Calibrate baseline"):
+                st.info("Calibrating... keep still / relaxed.")
+                vals = []
+                t_end = time.time() + cal_seconds
+                while time.time() < t_end:
+                  s, _ = alpha_inlet.pull_sample(timeout=1.0)
+                  if s is not None:
+                    vals.append(float(s[0]))
+                if len(vals) < 5:
+                  st.error("Not enough samples received to calibrate.")
+                else:
+                  m = float(np.mean(vals))
+                  sd = float(np.std(vals) + 1e-9)
+                  st.session_state.cal_mean = m
+                  st.session_state.cal_std = sd
+                  st.success(f"Baseline set. mean={m:.4f}, std={sd:.4f}, n={len(vals)}")
+
+              # UI widgets
+              alpha_bar = st.progress(0)
+              alpha_metric = st.metric("Alpha z-score", "—")
+              blink_box = st.empty()
+
+              ema = None
+              last_blink_ts = None
+
+              while True:
+                sample, ts = alpha_inlet.pull_sample(timeout=1.0)
+                if sample is None:
+                  st.warning("Waiting for alpha samples...")
+                  time.sleep(0.1)
+                  continue
+
+                raw = float(sample[0])
+                # z-score if calibrated
+                if st.session_state.cal_mean is not None:
+                  z = (raw - st.session_state.cal_mean) / st.session_state.cal_std
+                else:
+                  z = raw  # fallback: show raw until calibrated
+
+                # smooth
+                z_clamped = max(-3.0, min(3.0, z))
+                ema = z_clamped if ema is None else (smooth * z_clamped + (1 - smooth) * ema)
+
+                # map -3..+3 to 0..100 bar
+                bar_val = int(((ema + 3.0) / 6.0) * 100)
+                bar_val = max(0, min(100, bar_val))
+                alpha_bar.progress(bar_val)
+                alpha_metric.metric("Alpha z-score (smoothed)", f"{ema:+.2f}")
+
+                # Blink stream (optional)
+                if blink_inlet is not None:
+                  b, bts = blink_inlet.pull_sample(timeout=0.0)
+                  if b is not None:
+                    last_blink_ts = time.time()
+                    blink_box.error("BLINK!")
+
+                # clear blink indicator after 300ms
+                if last_blink_ts and (time.time() - last_blink_ts) > 0.3:
+                  blink_box.empty()
+                  last_blink_ts = None
+
+                time.sleep(0.05)
+              PY
+              streamlit run app.py --server.port 8501 --server.address 0.0.0.0

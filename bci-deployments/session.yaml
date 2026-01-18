@@ -1,0 +1,12 @@
+apiVersion: bci.example.com/v1alpha1
+kind: BCISession
+metadata:
+  name: session-001
+  namespace: bci
+spec:
+  stream:
+    name: EEG_UDL_01        # later: whatever your Neuroscience Pro publishes
+    type: EEG
+  pipelineRef: eeg-neurosciencepro-lowlat
+  latencyBudgetMs: 20
+  dataPolicyRef: strict

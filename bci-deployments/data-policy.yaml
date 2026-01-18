@@ -1,0 +1,11 @@
+apiVersion: bci.example.com/v1alpha1
+kind: DataPolicy
+metadata:
+  name: strict
+  namespace: bci
+spec:
+  rawRetention: "none"
+  allowEgress:
+    - "127.0.0.1/32"   # if you only want local callbacks (optional)
+  allowIngressFromNamespaces:
+    - bci

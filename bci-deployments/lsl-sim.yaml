@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lsl-sim
+  namespace: bci
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lsl-sim
+  template:
+    metadata:
+      labels:
+        app: lsl-sim
+    spec:
+      # Key setting for LSL discovery reliability
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: sim
+          image: python:3.11-slim
+          command: ["bash","-lc"]
+          args:
+            - |
+              pip install --no-cache-dir pylsl numpy && \
+              python - <<'PY'
+              import time, numpy as np
+              from pylsl import StreamInfo, StreamOutlet
+
+              name="EEG_UDL_01"
+              stype="EEG"
+              ch=8
+              srate=256
+
+              info=StreamInfo(name, stype, ch, srate, 'float32', 'eeg-sim-001')
+              outlet=StreamOutlet(info)
+
+              t=0.0
+              print(f"Publishing LSL stream: name={name} type={stype} ch={ch} srate={srate}")
+              while True:
+                  # fake EEG-ish: sine + noise (same value duplicated across channels here for simplicity)
+                  base = 0.5*np.sin(2*np.pi*10*t) + 0.2*np.sin(2*np.pi*22*t)
+                  sample = (base + 0.05*np.random.randn(ch)).astype(np.float32)
+                  outlet.push_sample(sample.tolist())
+                  t += 1.0/srate
+                  time.sleep(1.0/srate)
+              PY

@@ -1,0 +1,8 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: bci-realtime
+value: 100000
+globalDefault: false
+description: "High priority for low-latency BCI workloads"
+preemptionPolicy: PreemptLowerPriority
